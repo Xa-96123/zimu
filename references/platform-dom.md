@@ -160,7 +160,7 @@ async () => {
 
 注意：
 - **不要**用 `.n-radio` 取选项，Naive UI 渲染成 `label.n-radio-button`。
-- 头像不是必填；不选图时弹窗会自动把**当前视频帧**当头像（露脸角色就用这个默认值）。
+- 头像**不是**自动填充的：不加图就是空头像，必须自己截/上传（§4.2）。
 - 校验 `checked` 包含 `女` 与 `中年` 再点确定，否则会存错性别/年龄。
 
 ### 4.1 上传角色头像（无脸/声音类角色）
@@ -205,6 +205,49 @@ async () => {
 - 图片路径用技能自带的 `assets/role-cards/*.jpg`，不要指向微信临时目录。
 - 卡片是 1080×1080，vue-cropper 会自动生成裁剪框和"xxx × xxx"预览；点"确定"保存的是预览图。
 - 若要取消：点"取消"即可，不会留下角色。
+
+### 4.2 截取露脸角色头像（整张脸）
+
+用"页面内 canvas 裁剪 → 临时 `<img>` 展示 → 对元素截图存盘"的方式产出方形头像，避免把 base64 塞进上下文。关键点：`<img>` 必须放在 `top:0`，放负偏移会截出空白。
+
+1. 选帧并裁剪（`crop` 参数按实际画面调整；默认给的是竖屏短剧常见特写位置，画到画面 900×900）：
+
+```js
+async () => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const v = document.querySelector('video');
+  const seek = t => new Promise(res => { const h = () => { v.removeEventListener('seeked', h); res(); }; v.addEventListener('seeked', h); v.currentTime = t; });
+  v.pause();
+  await seek(40.1);          // 换成该角色露整脸、且没有烧录字幕的时刻
+  await sleep(250);
+  const cv = document.createElement('canvas');
+  cv.width = 900; cv.height = 900;
+  cv.getContext('2d').drawImage(v, 90, 120, 900, 900, 0, 0, 900, 900); // crop(x, y, 宽, 高)
+  let img = document.getElementById('__avatar');
+  if (!img) {
+    img = document.createElement('img');
+    img.id = '__avatar';
+    img.alt = 'avatar-candidate';
+    img.style.cssText = 'position:fixed;left:0;top:0;width:540px;height:540px;z-index:2147483647;';
+    document.documentElement.appendChild(img);
+  }
+  img.src = cv.toDataURL('image/jpeg', 0.92);
+  await sleep(400);
+  return { w: img.naturalWidth, h: img.naturalHeight };
+}
+```
+
+2. `take_snapshot {filePath:"<临时文件>"}`，搜 `avatar-candidate` 拿 uid（形如 `uid=5_538 image "avatar-candidate"`）。
+3. `take_screenshot {uid:"<uid>", filePath:"<工作目录>/tmp/avatar-<角色>.png"}` 存盘；用 Read 打开这张图核对：整张脸是否都在框内、有没有字幕、是不是只有该角色。
+4. 不满意就改 `crop` 或换时刻重来（`__avatar` 会原地更新，但要重新取 uid）。
+5. 走 §4.1 上传这张 png，截图确认弹窗预览后点"确定"。
+6. 清理：`document.getElementById('__avatar')?.remove()`。
+
+crop 经验值（1080×1920 竖屏）：
+- 常规特写：`(90, 120, 900, 900)`——含整头与肩，避开屏幕下方烧录字幕。
+- 面部偏上：`(90, 60, 900, 900)`；偏下/中景：`(90, 260, 900, 900)` 或以脸为中心前后各留 150-200px。
+- 中景/双人镜头：先把 `S` 改小（如 700）并移动 crop，确保只框目标角色。
+- 人脸太小时宁可选更近的镜头，也不要把脸放大裁切。
 
 ## 5. 抽帧拼图
 
