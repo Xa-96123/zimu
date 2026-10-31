@@ -160,8 +160,51 @@ async () => {
 
 注意：
 - **不要**用 `.n-radio` 取选项，Naive UI 渲染成 `label.n-radio-button`。
-- 头像不是必填，确定后立即新增（列表计数 +1）。
+- 头像不是必填；不选图时弹窗会自动把**当前视频帧**当头像（露脸角色就用这个默认值）。
 - 校验 `checked` 包含 `女` 与 `中年` 再点确定，否则会存错性别/年龄。
+
+### 4.1 上传角色头像（无脸/声音类角色）
+
+弹窗里的文件输入是 **隐藏的 `<input type="file" accept="image/*">`**，不在无障碍树里，`upload_file` 直接传会报 `Node is not a file input element`。必须先把它强制显示，拿到 uid 再上传：
+
+1. 打开"添加角色"弹窗后，找到并显示文件输入：
+
+```js
+async () => {
+  const modal = [...document.querySelectorAll('.n-modal')].find(m => (m.innerText || '').includes('添加角色') && m.offsetParent !== null);
+  const input = modal && modal.querySelector('input[type=file]');
+  if (!input) return 'noinput';
+  input.style.cssText = 'display:block!important;position:fixed;left:8px;top:8px;width:120px;height:24px;opacity:1;z-index:2147483647;border:2px solid #f00;background:#fff;';
+  input.removeAttribute('hidden');
+  return 'shown';
+}
+```
+
+2. `mcp__browser-use__take_snapshot {filePath:"<临时文件>"}`，在快照里搜 `选择文件` 拿到 uid（形如 `uid=2_562 button "选择文件"`）。
+3. 上传：
+
+```
+mcp__browser-use__upload_file {uid:"<上一步的 uid>", filePath:"<技能目录>/assets/role-cards/无脸.jpg"}
+```
+
+4. 等约 1.2 秒，确认裁剪预览已生成（`src` 是新的 blob URL、`naturalWidth` 与卡片一致），然后点"确定"：
+
+```js
+async () => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  await sleep(1200);
+  const modal = [...document.querySelectorAll('.n-modal')].find(m => (m.innerText || '').includes('添加角色') && m.offsetParent !== null);
+  const imgs = [...modal.querySelectorAll('img')].filter(i => i.alt === 'cropper-img').map(i => ({ src: (i.src || '').slice(0, 30), w: i.naturalWidth, h: i.naturalHeight }));
+  return imgs;
+}
+```
+
+5. 选图后可选：把文件输入的样式清掉（`input.style.cssText=''`），避免红色小框留在页面上。
+
+要点：
+- 图片路径用技能自带的 `assets/role-cards/*.jpg`，不要指向微信临时目录。
+- 卡片是 1080×1080，vue-cropper 会自动生成裁剪框和"xxx × xxx"预览；点"确定"保存的是预览图。
+- 若要取消：点"取消"即可，不会留下角色。
 
 ## 5. 抽帧拼图
 
