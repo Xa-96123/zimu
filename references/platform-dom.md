@@ -324,10 +324,58 @@ async () => {
 
 | 动作 | 等待 |
 |---|---|
-| 导航 / 刷新后读页面 | 3000-3200ms |
-| 打开下拉前 | 240ms |
-| 点选项后 | 170ms |
-| 滚动查找每一步 | 45ms |
-| 关闭下拉 | 90ms |
-| 保存后 | 3400-4200ms |
-| 新增角色后 | 约 1000ms |
+| 导航 / 刷新后读页面 | 2600-3200ms |
+| 打开下拉前 | 220ms |
+| 点选项后 | 150ms |
+| 滚动查找每一步 | 35ms |
+| 关闭下拉 | 80ms |
+| 保存后 | 4000ms |
+| 新增角色后 | 1300-1600ms |
+
+## 7. 省 token 的做法（推荐默认）
+
+逐集导航会清空 `window`，但 **localStorage 会保留**。把整套页面操作封装成一个助手，**只注入一次**，之后每集开头用一行 eval 恢复，避免反复搬运大段 JS。
+
+### 7.1 注入与恢复
+
+```js
+// 首次：写入源码并立即启用（SRC 约 4KB）
+async () => { localStorage.setItem('__A_SRC', SRC); eval(SRC); return Object.keys(window.A).length; }
+
+// 每集开头（导航/刷新后）：一行恢复
+async () => { if (!window.A) eval(localStorage.__A_SRC); await A.s(2800); return A.seq().length; }
+```
+
+规划好的助手 API（实现见仓库 `assets/helper-src.js`，或在本技能内按需重建）：
+
+| API | 作用 | 返回 |
+|---|---|---|
+| `A.mont({rows,col,t,two,crop,S,cols,scale,top})` | 一次画好拼图 | 格数 |
+| `A.tag([[行号,'角色名'],...])` | 批量打标（≤8 行/次） | `1:ok 2:ok` 简表 |
+| `A.verify(expected[])` | 只返回不一致项 | `{count,empty,bad[]}` |
+| `A.save()` | 点保存并等 4s | `{saved,empty}` |
+| `A.roles()` | 角色名列表 | `string[]` |
+| `A.avatar({t,x,y,s})` | 截单张头像到 `#__avatar` | 尺寸 |
+| `A.showInput()` / `A.addRole({name,sex,age})` | 打开添加角色弹窗并显示文件框 / 填表确定 | 状态 |
+| `A.s(ms)` | sleep | - |
+
+### 7.2 省调用的约定
+
+- **每集目标 ≤10 次工具调用**：读时间轴 1、拼图 1-2（配截图）、打标 2-3、校验+保存 1、刷新 1、复核 1。
+- 时间轴返回值只带 `行号|起始时间|文本`，不回传结束时间/标签。
+- 校验只回传 `bad`/`empty` 数量，不回传整条序列。
+- 角色头像**批量生成**：一次 evaluate 里创建多个 `<img id=a1..aN>`（并排摆 0/310/620px），一次快照拿全部 uid，再逐个 `take_screenshot {uid,filePath}`；比逐个生成省一半调用。
+- 只在必要时看大图；一般 1 帧/行、8-12 行一屏即可，模糊行再补 2 帧/行。
+
+### 7.3 localStorage 清理（必须）
+
+- 只存**源码字符串**（约 4KB），**绝不要**把截图、base64、行数据塞进 localStorage。
+- 一部剧标完、或用户说结束时，立即：
+  ```js
+  async () => { localStorage.removeItem('__A_SRC'); delete window.A; return 'cleared ' + localStorage.length; }
+  ```
+- 换 origin 或平台改版后，旧键会失效，同样要清掉再重新注入。
+
+### 7.4 汇报节奏
+
+每 5-10 集汇报一次进度即可（集数范围 + 新角色），不要逐集汇报；只在出现新角色或判角有争议时说明。

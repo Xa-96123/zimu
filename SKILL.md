@@ -94,6 +94,13 @@ description: 在浏览器内给短剧字幕逐条标注说话角色（内部平�
 - `navigate_page {type:"reload"}`，等 3 秒，再读一次序列，与预期映射逐行比对。**只有刷新后仍一致才算完成。**
 - 完成后直接导航到下一集（num+1、esp_id+1），重复上述流程。
 
+### 省 token 的做法
+
+- 把页面操作封装成助手存进 localStorage，只注入一次，之后每集开头一行 eval 恢复；**一部剧标完立刻 `localStorage.removeItem('__A_SRC')`**，localStorage 里只放源码（约 4KB），不要塞截图或 base64。代码见 `references/platform-dom.md` §7 与 `assets/helper-src.js`。
+- 每集控制在 10 次工具调用内；时间轴、校验只回传精简结果（不返回整条标签序列）。
+- 新角色头像一次生成多个、一次快照取 uid、再逐个元素截图。
+- 每 5-10 集汇报一次进度，不逐集汇报。
+
 ## 常见错误与修复
 
 | 现象 | 原因 | 修复 |
