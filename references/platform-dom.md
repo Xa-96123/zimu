@@ -81,6 +81,8 @@ async () => {
 
 一次只挂一个角色即可（不需要拼接多名字符串）；齐声场景才在一行挂多个。
 
+> **性能提示**：上面这段是一次性/兜底实现。推荐用 §7 的 `A.tagFast`——它带选项位置缓存（跨集有效）、条件轮询和可续跑队列，单行开销从 ~0.8-1.5s 降到 ~0.3-0.4s，且批次可放大到 16 行。
+
 ## 3. 保存 + 刷新复核
 
 ```js
@@ -326,13 +328,15 @@ async () => {
 
 | 动作 | 等待 |
 |---|---|
-| 导航 / 刷新后读页面 | 2600-3200ms |
-| 打开下拉前 | 220ms |
-| 点选项后 | 150ms |
-| 滚动查找每一步 | 35ms |
-| 关闭下拉 | 80ms |
-| 保存后 | 4000ms |
-| 新增角色后 | 1300-1600ms |
+| 导航 / 刷新后读页面 | 用 `A.waitRows()` 轮询行数稳定（通常 1-2s；硬上限 8s） |
+| 打开下拉前 | 轮询菜单可见（helper 内置，≤800ms；通常 <150ms） |
+| 点选项后 | 轮询选项从菜单消失（内置，≤400ms；通常 <100ms） |
+| 滚动查找每一步 | 35ms（仅缓存 miss 时全扫；命中直接跳 scrollTop） |
+| 关闭下拉 | 轮询菜单关闭（内置，≤250ms） |
+| 保存后 | 轮询"保存成功"toast（`A.save()` 内置，≤5s；通常 <1s）+ 600ms 余量 |
+| 新增角色后 | 轮询弹窗关闭或角色数增长（`A.addRole` 内置，≤2.5s） |
+
+固定 sleep 只在 helper 内部作为超时上限存在；正常路径全部走条件轮询。
 
 ## 7. 省 token 的做法（推荐默认）
 
@@ -344,22 +348,36 @@ async () => {
 // 首次：写入源码并立即启用（SRC 约 4KB）
 async () => { localStorage.setItem('__A_SRC', SRC); eval(SRC); return Object.keys(window.A).length; }
 
-// 每集开头（导航/刷新后）：一行恢复
-async () => { if (!window.A) eval(localStorage.__A_SRC); await A.s(2800); return A.seq().length; }
+// 每集开头（导航/刷新后）：一行恢复（轮询行数稳定，不再固定睡 2.8s）
+async () => { if (!window.A) eval(localStorage.__A_SRC); const n = await A.waitRows(); return n; }
 ```
 
-规划好的助手 API（实现见仓库 `assets/helper-src.js`，或在本技能内按需重建）：
+规划好的助手 API（实现见仓库 `assets/helper-src.js` v2，或在本技能内按需重建）：
 
 | API | 作用 | 返回 |
 |---|---|---|
 | `A.mont({rows,col,t,two,crop,S,cols,scale,top})` | 一次画好拼图 | 格数 |
 | `A.tag([[行号,'角色名'],...])` | 批量打标（≤8 行/次） | `1:ok 2:ok` 简表 |
+| `A.tagFast(tasks, batch=16)` | 队列化打标：任务追加进 `__A_Q` 后按批消费；选项位置缓存 `__A_OPTCACHE` 跨集复用 | `{out, remain, empty, multi}` |
+| `A.q()` | 读当前剩余队列（断点续跑用） | `[[行号,角色名],...]` |
 | `A.verify(expected[])` | 只返回不一致项 | `{count,empty,bad[]}` |
-| `A.save()` | 点保存并等 4s | `{saved,empty}` |
-| `A.roles()` | 角色名列表 | `string[]` |
+| `A.save()` | 点保存并轮询"保存成功" toast | `{saved,empty,toast}` |
+| `A.waitRows(timeout)` | 轮询字幕行出现且数量稳定 | 行数 |
+| `A.rosterSync()` | 每集开头同步名册缓存（缓存命中不打开面板） | `{cached}` |
+| `A.roles()` / `A.rolesCache()` | 角色名列表 / 跨集缓存的名册 | `string[]` |
+| `A.rolesDiff(names[])` | 与缓存名册 diff，返回需新建的裸姓名 | `string[]` |
 | `A.avatar({t,x,y,s})` | 截单张头像到 `#__avatar` | 尺寸 |
 | `A.showInput()` / `A.addRole({name,sex,age})` | 打开添加角色弹窗并显示文件框 / 填表确定 | 状态 |
 | `A.s(ms)` | sleep | - |
+| `A.clear()` | 清空 `__A_SRC`/`__A_Q`/`__A_OPTCACHE`/`__A_ROLES` 并卸载 A | - |
+
+### 7.1a v2 性能机制（`assets/helper-src.js`）
+
+- **选项位置缓存**：首次在某集打开菜单全扫（`scrollTop` 0→2100 步进 200）找到选项后，把 `角色名 → scrollTop` 存进 `__A_OPTCACHE`；同剧后续每集（甚至同集后续行）直接跳到缓存位置，单行查找从 ~0.7s 降到 ~0.1s。缓存带失效自愈：跳过去找不到就回退全扫并覆盖旧值。
+- **可续跑队列**：`A.tagFast(tasks)` 把 `[行号,角色名]` 追加进 `localStorage['__A_Q']`，每消费一条立即落盘。中途导航/刷新丢上下文后，重新 eval helper 再调 `A.tagFast([])` 即可从断点继续；用 `A.q()` 查剩余。
+- **条件轮询**：菜单打开、选项点击生效、弹窗关闭、保存 toast 全部改为 `poll(条件, 超时)`（30ms 步进），固定 sleep 只留作超时上限。正常情况下比固定等待快 2-5 倍。
+- **rVFC 拼图**：`A.mont` 先把 cells 按时间**升序排序**再 seek（HLS 顺序拉流，来回跳会反复重新缓冲），每次 seek 后用 `requestVideoFrameCallback` 等**真实出帧**再 `drawImage`（不支持时回退 90ms），并带 1.5s 超时兜底——单格 seek 卡死不再炸掉整批；返回值含 `seekTimeouts` 供排查。
+- **名册跨集缓存**：`__A_ROLES` 存全剧角色名（`性别-姓名-年龄段`）。每集开头 `A.rosterSync()` 命中缓存就不打开角色列表面板；`A.rolesDiff([...裸姓名])` 直接给出需新建的角色；`A.addRole` 成功后自动追加缓存。
 
 ### 7.2 省调用的约定
 
@@ -371,12 +389,12 @@ async () => { if (!window.A) eval(localStorage.__A_SRC); await A.s(2800); return
 
 ### 7.3 localStorage 清理（必须）
 
-- 只存**源码字符串**（约 4KB），**绝不要**把截图、base64、行数据塞进 localStorage。
+- 只存**源码字符串**（`__A_SRC` 约 6KB）与**轻量状态**（`__A_Q` 队列、`__A_OPTCACHE` 选项位置、`__A_ROLES` 名册，全部 <2KB），**绝不要**把截图、base64、行数据塞进 localStorage。
 - 一部剧标完、或用户说结束时，立即：
   ```js
-  async () => { localStorage.removeItem('__A_SRC'); delete window.A; return 'cleared ' + localStorage.length; }
+  async () => { if (!window.A) eval(localStorage.__A_SRC); return A.clear(); }
   ```
-- 换 origin 或平台改版后，旧键会失效，同样要清掉再重新注入。
+- 换剧后建议保留 `__A_OPTCACHE`/`__A_ROLES` 会在新剧失效——**换剧必须 `A.clear()`**（选项位置和名册是按剧缓存的，跨剧复用会标错）；同剧换集不受影响。
 
 ### 7.4 汇报节奏
 
